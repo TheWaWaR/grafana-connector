@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "loki_logs cookie sync",
+  "version": "1.1.0",
+  "description": "Push your Grafana login cookies to the local loki_logs server (127.0.0.1:7788). The Grafana URL comes from the server's config.",
+  "permissions": ["cookies", "alarms", "storage"],
+  "host_permissions": ["http://127.0.0.1:7788/*"],
+  "optional_host_permissions": ["https://*/*", "http://*/*"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "loki_logs cookie sync", "default_popup": "popup.html" }
+}
