@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "loki_logs cookie sync",
+  "name": "grafana-connector cookie sync",
   "version": "1.2.0",
-  "description": "Push your Grafana login cookies (one or more Grafana instances) to the local loki_logs server (127.0.0.1:7788). The Grafana URLs come from the server's config.",
+  "description": "Push your Grafana login cookies (one or more Grafana instances) to the local grafana-connector server (127.0.0.1:7788). The Grafana URLs come from the server's config.",
   "permissions": [
     "cookies",
     "alarms",
@@ -19,7 +19,7 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "loki_logs cookie sync",
+    "default_title": "grafana-connector cookie sync",
     "default_popup": "popup.html"
   }
 }

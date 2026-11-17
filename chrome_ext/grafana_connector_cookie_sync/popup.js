@@ -7,7 +7,7 @@ const CLS = { ok: "ok", auth: "warn", "no-cookies": "warn", off: "err", error: "
 const HINT = {
   auth: "需要授权读取该域名的 cookie，点下面的按钮。",
   "no-cookies": "Chrome 里还没登录这个 Grafana，先打开它登录。",
-  off: "连不上本地服务端：在终端运行 loki_logs.py health 会自动拉起它。",
+  off: "连不上本地服务端：在终端运行 grafana_connector.py health 会自动拉起它。",
 };
 
 function render(results) {

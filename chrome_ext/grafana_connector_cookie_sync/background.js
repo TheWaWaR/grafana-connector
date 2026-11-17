@@ -1,4 +1,4 @@
-// 把各个 Grafana 实例的登录 cookie（包括 HttpOnly 的 SSO 会话 cookie）推送给本地 loki_logs 服务端。
+// 把各个 Grafana 实例的登录 cookie（包括 HttpOnly 的 SSO 会话 cookie）推送给本地 grafana-connector 服务端。
 // Grafana 实例不写死：从服务端的 GET /config 读取；读取这些域名 cookie 的权限在 popup 里由用户点按钮授予。
 // 服务端没在跑时推送会失败，没关系：之后的定时推送 / 在 popup 里点"推送"会补上。
 const SERVER = "http://127.0.0.1:7788";
@@ -86,7 +86,7 @@ async function setBadge(text, color, detail) {
   console.log("badge", text, detail);
   await chrome.action.setBadgeText({ text });
   if (text) await chrome.action.setBadgeBackgroundColor({ color });
-  await chrome.action.setTitle({ title: `loki_logs cookie sync\n${detail}` });
+  await chrome.action.setTitle({ title: `grafana-connector cookie sync\n${detail}` });
 }
 
 function hostMatch(instHost, cookieDomain) {

@@ -5,23 +5,23 @@
 
 Grafana 前面通常有 SSO / AWS Verified Access 之类的认证，脚本没法自己完成登录，
 服务端复用 Chrome 里已登录的 cookie（如 AWSVAAuthSessionCookie / grafana_session，HttpOnly），
-每个实例的 cookie 存在 ~/.config/loki_logs/cookies/<name>.txt（0600；老的 default 实例用 cookie.txt）。
+每个实例的 cookie 存在 ~/.config/grafana-connector/cookies/<name>.txt（0600；老的 default 实例用 cookie.txt）。
 
-Grafana 实例（必填）写在 ~/.config/loki_logs/config.toml（路径可用 LOKI_LOGS_CONFIG 覆盖）:
+Grafana 实例（必填）写在 ~/.config/grafana-connector/config.toml（路径可用 GRAFANA_CONNECTOR_CONFIG 覆盖）:
     default = "sptt"                        # 不指定 --grafana 时用哪个；只有一个实例时可省略
     [grafana.sptt]
     url = "https://grafana.sptt.dev"
     [grafana.arb]
     url = "https://admin.example.com/arb-grafana"   # 支持带子路径的 Grafana
-  用 `loki_logs.py config add <name> <url> [--default]` 写入。老配置里的顶层 grafana_url 视为实例 "default"；
-  环境变量 LOKI_LOGS_GRAFANA_URL / serve --grafana-url 会覆盖实例 "default" 的地址。
+  用 `grafana_connector.py config add <name> <url> [--default]` 写入。老配置里的顶层 grafana_url 视为实例 "default"；
+  环境变量 GRAFANA_CONNECTOR_GRAFANA_URL / serve --grafana-url 会覆盖实例 "default" 的地址。
 
 cookie 的来源:
-  1. Chrome 扩展（推荐）: 仓库里的 chrome_ext/loki_logs_cookie_sync/，在 chrome://extensions 打开开发者模式后
+  1. Chrome 扩展（推荐）: 仓库里的 chrome_ext/grafana_connector_cookie_sync/，在 chrome://extensions 打开开发者模式后
      "加载已解压的扩展程序"。它从本地服务端读取所有 Grafana 实例（点扩展图标授权读取这些域名的 cookie），
      监听 cookie 变化并 POST 给本地服务端；在 Chrome 里登录/刷新 Grafana 后自动同步。
   2. 手动: Chrome DevTools → Network → 任一 grafana 请求 → Request Headers → 复制 Cookie 的值，
-     然后 `pbpaste | python3 loki_logs.py set-cookie --grafana <name>`。
+     然后 `pbpaste | python3 grafana_connector.py set-cookie --grafana <name>`。
   3. `serve --source chrome` 直接读本机 Chrome 的 cookie 库（会弹钥匙串授权，需要 cryptography）。
 
 结构:
@@ -32,41 +32,42 @@ cookie 的来源:
   其它子命令    CLI 客户端（只依赖标准库），通过 HTTP 调用本地服务端。
 
 用法:
-    python3 loki_logs.py config add sptt https://grafana.sptt.dev --default  # 每个 Grafana 一次
-    python3 loki_logs.py config add arb https://admin.example.com/arb-grafana
-    python3 loki_logs.py config                                              # 查看当前配置
-    python3 loki_logs.py config default arb / config remove arb
-    python3 loki_logs.py serve                       # 一般不用手动跑，客户端 / MCP 会自动拉起
-    pbpaste | python3 loki_logs.py set-cookie --grafana arb
-    python3 loki_logs.py serve --source chrome --profile "Profile 1"
+    python3 grafana_connector.py config add sptt https://grafana.sptt.dev --default  # 每个 Grafana 一次
+    python3 grafana_connector.py config add arb https://admin.example.com/arb-grafana
+    python3 grafana_connector.py config                                              # 查看当前配置
+    python3 grafana_connector.py config default arb / config remove arb
+    python3 grafana_connector.py serve                       # 一般不用手动跑，客户端 / MCP 会自动拉起
+    pbpaste | python3 grafana_connector.py set-cookie --grafana arb
+    python3 grafana_connector.py serve --source chrome --profile "Profile 1"
 
-    python3 loki_logs.py health                              # 所有实例的登录状态
-    python3 loki_logs.py --grafana arb ds --type all         # 下面的命令都可以用 --grafana 选实例（默认 default）
-    python3 loki_logs.py ds                                  # 列出 Loki 数据源；其它命令都必须用 --ds 指定
-    python3 loki_logs.py labels --ds test --since 6h
-    python3 loki_logs.py values app --ds test
-    python3 loki_logs.py values pod --ds prod --query '{app="my-service"}'
-    python3 loki_logs.py series '{app="my-service"}' --ds prod
-    python3 loki_logs.py query '{app="my-service"} |= "error"' --ds test --since 30m --limit 50
-    python3 loki_logs.py query '{app="my-service"} | logfmt | level="ERROR"' --ds "PROD Logs" \\
+    python3 grafana_connector.py health                              # 所有实例的登录状态
+    python3 grafana_connector.py --grafana arb ds --type all         # 下面的命令都可以用 --grafana 选实例（默认 default）
+    python3 grafana_connector.py ds                                  # 列出 Loki 数据源；其它命令都必须用 --ds 指定
+    python3 grafana_connector.py labels --ds test --since 6h
+    python3 grafana_connector.py values app --ds test
+    python3 grafana_connector.py values pod --ds prod --query '{app="my-service"}'
+    python3 grafana_connector.py series '{app="my-service"}' --ds prod
+    python3 grafana_connector.py query '{app="my-service"} |= "error"' --ds test --since 30m --limit 50
+    python3 grafana_connector.py query '{app="my-service"} | logfmt | level="ERROR"' --ds "PROD Logs" \\
         --start 2026-01-02T15:00 --end 2026-01-02T15:30
-    python3 loki_logs.py query 'sum by (detected_level) (count_over_time({app="my-service"} [5m]))' --ds test --since 6h
-    python3 loki_logs.py query '{app="my-service"}' --ds prod --since 15m --asc --json
+    python3 grafana_connector.py query 'sum by (detected_level) (count_over_time({app="my-service"} [5m]))' --ds test --since 6h
+    python3 grafana_connector.py query '{app="my-service"}' --ds prod --since 15m --asc --json
 
     # PromQL（Prometheus 类型的数据源，经 Grafana /api/ds/query，数据源上配的 custom query parameters 也会带上）
-    python3 loki_logs.py --grafana arb prom 'up' --ds greptimedb-promql --instant
-    python3 loki_logs.py --grafana arb prom 'sum by(job)(rate(x_total[5m]))' --ds greptimedb --since 2h --step 5m
+    python3 grafana_connector.py --grafana arb prom 'up' --ds greptimedb-promql --instant
+    python3 grafana_connector.py --grafana arb prom 'sum by(job)(rate(x_total[5m]))' --ds greptimedb --since 2h --step 5m
 
     # 可选：注册为 Claude Code 的 MCP server（先把 serve 跑起来）
-    claude mcp add -s user loki -- python3 ~/.claude/skills/loki-logs/scripts/loki_logs.py mcp
+    claude mcp add -s user grafana -- python3 ~/.claude/skills/grafana-connector/scripts/grafana_connector.py mcp
 
 --ds 没有默认值（避免查错环境），可以写完整名字、uid 或唯一前缀（prod / test）。
 
 环境变量:
-    LOKI_LOGS_SERVER   客户端/MCP 连接的服务端地址，默认 http://127.0.0.1:7788
-    LOKI_LOGS_GRAFANA_URL  实例 "default" 的 Grafana 地址（覆盖配置文件）
-    LOKI_LOGS_CONFIG       配置文件路径，默认 ~/.config/loki_logs/config.toml
-    LOKI_LOGS_NO_AUTOSTART 设了就不自动拉起服务端
+    GRAFANA_CONNECTOR_SERVER   客户端/MCP 连接的服务端地址，默认 http://127.0.0.1:7788
+    GRAFANA_CONNECTOR_GRAFANA_URL  实例 "default" 的 Grafana 地址（覆盖配置文件）
+    GRAFANA_CONNECTOR_CONFIG       配置文件路径，默认 ~/.config/grafana-connector/config.toml
+    GRAFANA_CONNECTOR_NO_AUTOSTART 设了就不自动拉起服务端
+    （改名前的 LOKI_LOGS_* 仍然有效；老的配置目录 ~/.config/loki_logs 第一次运行时自动搬到新目录）
 
 时间参数 --since / --start / --end:
     30m / 2h / 7d 这类相对时间（--start/--end 表示 now - x，--since 表示 end 往前的时长），
@@ -94,9 +95,20 @@ import urllib.request
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-DEFAULT_SERVER = os.environ.get("LOKI_LOGS_SERVER", "http://127.0.0.1:7788")
-CONFIG_DIR = os.path.expanduser("~/.config/loki_logs")
-CONFIG_FILE = os.environ.get("LOKI_LOGS_CONFIG") or os.path.join(CONFIG_DIR, "config.toml")
+def _env(name, default=None):
+    """GRAFANA_CONNECTOR_<name>，兼容老名字 LOKI_LOGS_<name>。"""
+    return os.environ.get(f"GRAFANA_CONNECTOR_{name}") or os.environ.get(f"LOKI_LOGS_{name}") or default
+
+
+DEFAULT_SERVER = _env("SERVER", "http://127.0.0.1:7788")
+CONFIG_DIR = os.path.expanduser("~/.config/grafana-connector")
+LEGACY_CONFIG_DIR = os.path.expanduser("~/.config/loki_logs")  # 改名前（loki-logs）的配置目录
+if not os.path.exists(CONFIG_DIR) and os.path.isdir(LEGACY_CONFIG_DIR) and not os.path.islink(LEGACY_CONFIG_DIR):
+    try:
+        os.rename(LEGACY_CONFIG_DIR, CONFIG_DIR)  # 一次性迁移：配置、cookie、日志整个目录搬过来
+    except OSError:
+        pass
+CONFIG_FILE = _env("CONFIG") or os.path.join(CONFIG_DIR, "config.toml")
 _CFG_DIR = os.path.dirname(os.path.abspath(CONFIG_FILE))  # cookie 跟配置文件放在一起
 LEGACY_COOKIE_FILE = os.path.join(_CFG_DIR, "cookie.txt")  # 实例 "default" 的 cookie（兼容老版本）
 COOKIE_DIR = os.path.join(_CFG_DIR, "cookies")
@@ -167,16 +179,16 @@ def config_instances(cfg):
 
 
 def resolve_instances(cli_url=None):
-    """返回 ({name: url}, default_name)。--grafana-url / LOKI_LOGS_GRAFANA_URL 覆盖实例 "default"。都没有就报错退出。"""
+    """返回 ({name: url}, default_name)。--grafana-url / GRAFANA_CONNECTOR_GRAFANA_URL 覆盖实例 "default"。都没有就报错退出。"""
     cfg = load_config()
     inst = config_instances(cfg)
-    override = cli_url or os.environ.get("LOKI_LOGS_GRAFANA_URL")
+    override = cli_url or _env("GRAFANA_URL")
     if override:
         inst[LEGACY_NAME] = normalize_grafana_url(override)
     if not inst:
         sys.exit("error: Grafana URL is not configured. Add one with:\n"
                  f"  python3 {SCRIPT} config add <name> https://grafana.example.com --default   (writes {CONFIG_FILE})\n"
-                 "  or: export LOKI_LOGS_GRAFANA_URL=https://grafana.example.com")
+                 "  or: export GRAFANA_CONNECTOR_GRAFANA_URL=https://grafana.example.com")
     default = cfg.get("default")
     if default not in inst:
         default = LEGACY_NAME if LEGACY_NAME in inst else (next(iter(inst)) if len(inst) == 1 else None)
@@ -316,7 +328,7 @@ class ChromeCookies:
         path = os.path.join(self.base, profile, "Cookies")
         if not os.path.exists(path):
             return 0, []
-        tmp = tempfile.mkdtemp(prefix="loki_logs_")
+        tmp = tempfile.mkdtemp(prefix="grafana_connector_")
         try:
             dst = os.path.join(tmp, "Cookies")
             shutil.copy2(path, dst)  # Chrome 运行时会锁库，拷一份再读
@@ -402,8 +414,8 @@ class FileCookies:
         write_cookie_file(self.path, cookies)
 
     def hint(self, url):
-        return (f"Ask the user to open {url} in Chrome (with the loki_logs cookie-sync extension installed) "
-                f"and log in again, or paste the Cookie header via `loki_logs.py set-cookie`; then retry.")
+        return (f"Ask the user to open {url} in Chrome (with the grafana-connector cookie-sync extension installed) "
+                f"and log in again, or paste the Cookie header via `grafana_connector.py set-cookie`; then retry.")
 
 
 # ---------------------------------------------------------------- Grafana / Loki
@@ -418,7 +430,7 @@ class Grafana:
         self.src = cookie_src
         self.s = requests.Session()
         self.s.trust_env = False
-        self.s.headers["User-Agent"] = "loki-logs/1.0"
+        self.s.headers["User-Agent"] = "grafana-connector/1.0"
         self.lock = threading.Lock()
         self.profile = None
         self.loaded_at = 0
@@ -623,7 +635,7 @@ class Hub:
         if len(hits) == 1:
             return hits[0]
         raise BadRequest(f"unknown Grafana instance {key!r}; configured: {names} "
-                         f"(add one with `loki_logs.py config add <name> <url>`)")
+                         f"(add one with `grafana_connector.py config add <name> <url>`)")
 
 
 def normalize_streams(result, direction):
@@ -923,7 +935,7 @@ def start_server(server):
         raise ClientError(tail[tail.index("Grafana URL is not configured"):])
     hint = (f" Missing dependency, run: {sys.executable} -m pip install requests."
             if "No module named 'requests'" in tail else "")
-    raise ClientError(f"failed to start loki_logs server ({sys.executable} {SCRIPT} serve).{hint} "
+    raise ClientError(f"failed to start grafana-connector server ({sys.executable} {SCRIPT} serve).{hint} "
                       f"Log {SERVER_LOG}:\n{tail}")
 
 
@@ -944,12 +956,12 @@ def call(path, params=None, method="GET", server=None, autostart=True):
     except urllib.error.URLError as e:
         local = urllib.parse.urlparse(server).hostname in ("127.0.0.1", "localhost")
         if (autostart and local and isinstance(e.reason, ConnectionRefusedError)
-                and not os.environ.get("LOKI_LOGS_NO_AUTOSTART")):
+                and not _env("NO_AUTOSTART")):
             start_server(server)
             return call(path, params, method, server, autostart=False)
         raise ClientError(
-            f"cannot reach loki_logs server at {server} ({e.reason}). Start it with: python3 {SCRIPT} serve. "
-            f"If you are running inside a sandbox without network access (e.g. Codex), use the loki MCP tools instead.")
+            f"cannot reach grafana-connector server at {server} ({e.reason}). Start it with: python3 {SCRIPT} serve. "
+            f"If you are running inside a sandbox without network access (e.g. Codex), use the grafana MCP tools instead.")
 
 
 def fmt_labels(d):
@@ -1060,7 +1072,7 @@ def client_request(kind, a):
 # ---------------------------------------------------------------- MCP (stdio, JSON-RPC 2.0)
 
 _GRAFANA_PROP = {
-    "grafana": {"type": "string", "description": "Grafana instance name (see loki_health), URL or unique name prefix. "
+    "grafana": {"type": "string", "description": "Grafana instance name (see grafana_health), URL or unique name prefix. "
                                                  "Optional: defaults to the configured default instance."},
 }
 
@@ -1068,23 +1080,23 @@ _RANGE_PROPS = {
     **_GRAFANA_PROP,
     "ds": {"type": "string", "description": "Datasource (environment) name, uid or unique prefix, e.g. \"PROD Logs\" / \"test\". "
                                             "Required, there is no default: use the environment the user asked for; "
-                                            "if they did not say, ask them (list options with loki_datasources; type=prometheus for prom_query)."},
+                                            "if they did not say, ask them (list options with grafana_datasources; type=prometheus for prom_query)."},
     "since": {"type": "string", "description": "Look-back window ending at `end`, e.g. 15m, 1h, 2d. Default 1h. Ignored if `start` is set."},
     "start": {"type": "string", "description": "Range start: relative (2h = now-2h), unix ts, or ISO time like 2026-11-13T22:00:00+08:00 (no tz = server local time)."},
     "end": {"type": "string", "description": "Range end, same formats as start. Default now."},
 }
 
 MCP_INSTRUCTIONS = """\
-Query Loki logs (and Prometheus/PromQL metrics via prom_query) in the team Grafana through a local loki_logs server (auto-started on demand).
-Several Grafana instances can be configured; loki_health lists them with their names, URLs and login state. Every tool takes an optional `grafana` (instance name) and uses the default instance otherwise; when the user names a Grafana host/URL, pass the matching instance.
+Query Loki logs (and Prometheus/PromQL metrics via prom_query) in the team Grafana through a local grafana-connector server (auto-started on demand).
+Several Grafana instances can be configured; grafana_health lists them with their names, URLs and login state. Every tool takes an optional `grafana` (instance name) and uses the default instance otherwise; when the user names a Grafana host/URL, pass the matching instance.
 
 Before querying, make sure you know (ask the user instead of guessing):
 1. Service: usually the `app` label. If the name is vague, list candidates with loki_label_values(name="app", ds=...) and ask. Never query a whole namespace without a service filter.
-2. Environment (`ds`): required, there is NO default. If the user did not say, list options with loki_datasources and ask. Always state which environment you queried; call out PROD explicitly.
+2. Environment (`ds`): required, there is NO default. If the user did not say, list options with grafana_datasources and ask. Always state which environment you queried; call out PROD explicitly.
 3. Time range: default the last 1h if unspecified, and state it.
 
 Workflow:
-- If unsure about login state, call loki_health first.
+- If unsure about login state, call grafana_health first.
 - Pull ~5 lines to learn the log format (logfmt `key=value`, JSON, or plain text) and its fields.
 - Look at volume before lines: e.g. sum by (detected_level) (count_over_time({app="<app>"} [5m])) with step.
 - Then fetch lines with a small limit, a narrow time range and max_line_len.
@@ -1092,20 +1104,20 @@ Workflow:
 - Follow a trace / request id with `{app="<app>"} |= "<id>"` over a wider range.
 - Summarize key lines (timestamp + key fields) and counts; do not dump raw logs.
 
-If the server fails to start because the Grafana URL is not configured, or the user wants a Grafana that is not configured yet, show the user the command (`loki_logs.py config add <name> <url>`) and ask for their Grafana URL; the server picks up config changes without a restart.
-If a tool says the Grafana login expired or there are no cookies yet: stop and ask the user to open the Grafana URL from the error message in Chrome and log in (the loki_logs cookie-sync extension pushes cookies to the server automatically; for a newly added instance the user first clicks the extension icon and grants access). Never ask the user to paste cookies into the chat.
+If the server fails to start because the Grafana URL is not configured, or the user wants a Grafana that is not configured yet, show the user the command (`grafana_connector.py config add <name> <url>`) and ask for their Grafana URL; the server picks up config changes without a restart.
+If a tool says the Grafana login expired or there are no cookies yet: stop and ask the user to open the Grafana URL from the error message in Chrome and log in (the grafana-connector cookie-sync extension pushes cookies to the server automatically; for a newly added instance the user first clicks the extension icon and grants access). Never ask the user to paste cookies into the chat.
 """
 
 MCP_TOOLS = [
     {
-        "name": "loki_health",
-        "description": "List the configured Grafana instances and check that the local loki_logs server is running and "
+        "name": "grafana_health",
+        "description": "List the configured Grafana instances and check that the local grafana-connector server is running and "
                        "logged in to each (starts it if needed). On a login error, ask the user to log in to that Grafana in Chrome.",
         "inputSchema": {"type": "object", "properties": {**_GRAFANA_PROP}},
         "kind": "health",
     },
     {
-        "name": "loki_datasources",
+        "name": "grafana_datasources",
         "description": "List datasources in a Grafana instance: Loki ones (environments) by default, "
                        "type=\"prometheus\" for PromQL ones, type=\"all\" for every type.",
         "inputSchema": {"type": "object", "properties": {
@@ -1211,7 +1223,7 @@ def run_mcp():
                 result = {
                     "protocolVersion": params.get("protocolVersion", "2025-06-18"),
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "loki-logs", "version": "1.2.0"},
+                    "serverInfo": {"name": "grafana-connector", "version": "1.2.0"},
                     "instructions": MCP_INSTRUCTIONS,
                 }
             elif method == "ping":
@@ -1277,9 +1289,9 @@ def cmd_config(args):
         mark = " (default)" if n == default else ""
         has = "yes" if os.path.exists(cookie_file_for(n)) else "no"
         print(f"  {n}{mark}: {u}  cookies={cookie_file_for(n)} (exists: {has})")
-    env = os.environ.get("LOKI_LOGS_GRAFANA_URL")
+    env = _env("GRAFANA_URL")
     if env:
-        print(f"LOKI_LOGS_GRAFANA_URL (overrides instance {LEGACY_NAME!r}): {env}")
+        print(f"GRAFANA_CONNECTOR_GRAFANA_URL (overrides instance {LEGACY_NAME!r}): {env}")
 
 
 def main():
@@ -1297,7 +1309,7 @@ def main():
 
     sp = sub.add_parser("serve", help="run the local server")
     sp.add_argument("--port", type=int, default=urllib.parse.urlparse(DEFAULT_SERVER).port or 7788)
-    sp.add_argument("--grafana-url", help=f"override the URL of instance {LEGACY_NAME!r} (and LOKI_LOGS_GRAFANA_URL)")
+    sp.add_argument("--grafana-url", help=f"override the URL of instance {LEGACY_NAME!r} (and GRAFANA_CONNECTOR_GRAFANA_URL)")
     sp.add_argument("--source", choices=["file", "chrome"], default="file",
                     help="file: cookie files fed by the extension / set-cookie (default); chrome: read Chrome's cookie DB")
     sp.add_argument("--browser", choices=sorted(BROWSERS), default="chrome", help="for --source chrome")
