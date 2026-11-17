@@ -1,23 +1,27 @@
 #!/usr/bin/env python3
 """
-通过 Grafana 查询 Loki 日志的 C/S 小工具，方便 AI（以及人）排查日志。
+通过 Grafana 查询 Loki 日志（以及 Prometheus/PromQL 指标）的 C/S 小工具，方便 AI（以及人）排查问题。
+支持多个 Grafana 实例，每个实例有自己的名字、地址和登录 cookie。
 
 Grafana 前面通常有 SSO / AWS Verified Access 之类的认证，脚本没法自己完成登录，
 服务端复用 Chrome 里已登录的 cookie（如 AWSVAAuthSessionCookie / grafana_session，HttpOnly），
-cookie 存在 ~/.config/loki_logs/cookie.txt（0600）。
+每个实例的 cookie 存在 ~/.config/loki_logs/cookies/<name>.txt（0600；老的 default 实例用 cookie.txt）。
 
-Grafana 地址（必填，优先级从高到低）:
-  serve --grafana-url URL
-  环境变量 LOKI_LOGS_GRAFANA_URL
-  配置文件 ~/.config/loki_logs/config.toml 里的 grafana_url（路径可用 LOKI_LOGS_CONFIG 覆盖），
-  可以用 `loki_logs.py config --grafana-url https://grafana.example.com` 写入。
+Grafana 实例（必填）写在 ~/.config/loki_logs/config.toml（路径可用 LOKI_LOGS_CONFIG 覆盖）:
+    default = "sptt"                        # 不指定 --grafana 时用哪个；只有一个实例时可省略
+    [grafana.sptt]
+    url = "https://grafana.sptt.dev"
+    [grafana.arb]
+    url = "https://admin.example.com/arb-grafana"   # 支持带子路径的 Grafana
+  用 `loki_logs.py config add <name> <url> [--default]` 写入。老配置里的顶层 grafana_url 视为实例 "default"；
+  环境变量 LOKI_LOGS_GRAFANA_URL / serve --grafana-url 会覆盖实例 "default" 的地址。
 
 cookie 的来源:
   1. Chrome 扩展（推荐）: 仓库里的 chrome_ext/loki_logs_cookie_sync/，在 chrome://extensions 打开开发者模式后
-     "加载已解压的扩展程序"。它从本地服务端读取 Grafana 地址（点扩展图标授权读取该域名的 cookie），
+     "加载已解压的扩展程序"。它从本地服务端读取所有 Grafana 实例（点扩展图标授权读取这些域名的 cookie），
      监听 cookie 变化并 POST 给本地服务端；在 Chrome 里登录/刷新 Grafana 后自动同步。
   2. 手动: Chrome DevTools → Network → 任一 grafana 请求 → Request Headers → 复制 Cookie 的值，
-     然后 `pbpaste | python3 loki_logs.py set-cookie`。
+     然后 `pbpaste | python3 loki_logs.py set-cookie --grafana <name>`。
   3. `serve --source chrome` 直接读本机 Chrome 的 cookie 库（会弹钥匙串授权，需要 cryptography）。
 
 结构:
@@ -28,14 +32,17 @@ cookie 的来源:
   其它子命令    CLI 客户端（只依赖标准库），通过 HTTP 调用本地服务端。
 
 用法:
-    python3 loki_logs.py config --grafana-url https://grafana.example.com   # 只需一次
+    python3 loki_logs.py config add sptt https://grafana.sptt.dev --default  # 每个 Grafana 一次
+    python3 loki_logs.py config add arb https://admin.example.com/arb-grafana
     python3 loki_logs.py config                                              # 查看当前配置
+    python3 loki_logs.py config default arb / config remove arb
     python3 loki_logs.py serve                       # 一般不用手动跑，客户端 / MCP 会自动拉起
-    pbpaste | python3 loki_logs.py set-cookie
+    pbpaste | python3 loki_logs.py set-cookie --grafana arb
     python3 loki_logs.py serve --source chrome --profile "Profile 1"
 
-    python3 loki_logs.py health
-    python3 loki_logs.py ds                                  # 列出数据源；其它命令都必须用 --ds 指定
+    python3 loki_logs.py health                              # 所有实例的登录状态
+    python3 loki_logs.py --grafana arb ds --type all         # 下面的命令都可以用 --grafana 选实例（默认 default）
+    python3 loki_logs.py ds                                  # 列出 Loki 数据源；其它命令都必须用 --ds 指定
     python3 loki_logs.py labels --ds test --since 6h
     python3 loki_logs.py values app --ds test
     python3 loki_logs.py values pod --ds prod --query '{app="my-service"}'
@@ -46,6 +53,10 @@ cookie 的来源:
     python3 loki_logs.py query 'sum by (detected_level) (count_over_time({app="my-service"} [5m]))' --ds test --since 6h
     python3 loki_logs.py query '{app="my-service"}' --ds prod --since 15m --asc --json
 
+    # PromQL（Prometheus 类型的数据源，经 Grafana /api/ds/query，数据源上配的 custom query parameters 也会带上）
+    python3 loki_logs.py --grafana arb prom 'up' --ds greptimedb-promql --instant
+    python3 loki_logs.py --grafana arb prom 'sum by(job)(rate(x_total[5m]))' --ds greptimedb --since 2h --step 5m
+
     # 可选：注册为 Claude Code 的 MCP server（先把 serve 跑起来）
     claude mcp add -s user loki -- python3 ~/.claude/skills/loki-logs/scripts/loki_logs.py mcp
 
@@ -53,7 +64,7 @@ cookie 的来源:
 
 环境变量:
     LOKI_LOGS_SERVER   客户端/MCP 连接的服务端地址，默认 http://127.0.0.1:7788
-    LOKI_LOGS_GRAFANA_URL  Grafana 地址（覆盖配置文件）
+    LOKI_LOGS_GRAFANA_URL  实例 "default" 的 Grafana 地址（覆盖配置文件）
     LOKI_LOGS_CONFIG       配置文件路径，默认 ~/.config/loki_logs/config.toml
     LOKI_LOGS_NO_AUTOSTART 设了就不自动拉起服务端
 
@@ -86,7 +97,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 DEFAULT_SERVER = os.environ.get("LOKI_LOGS_SERVER", "http://127.0.0.1:7788")
 CONFIG_DIR = os.path.expanduser("~/.config/loki_logs")
 CONFIG_FILE = os.environ.get("LOKI_LOGS_CONFIG") or os.path.join(CONFIG_DIR, "config.toml")
-DEFAULT_COOKIE_FILE = os.path.join(CONFIG_DIR, "cookie.txt")
+_CFG_DIR = os.path.dirname(os.path.abspath(CONFIG_FILE))  # cookie 跟配置文件放在一起
+LEGACY_COOKIE_FILE = os.path.join(_CFG_DIR, "cookie.txt")  # 实例 "default" 的 cookie（兼容老版本）
+COOKIE_DIR = os.path.join(_CFG_DIR, "cookies")
+LEGACY_NAME = "default"
+PROM_TYPES = ("prometheus",)
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 5000
 SCRIPT = os.path.abspath(__file__)
@@ -122,31 +137,67 @@ def load_config():
         sys.exit(f"error: bad config file {CONFIG_FILE}: {e}")
 
 
-def normalize_grafana_url(url):
-    u = urllib.parse.urlparse(url.strip())
+_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+
+def try_normalize_url(url):
+    u = urllib.parse.urlparse((url or "").strip())
     if u.scheme not in ("http", "https") or not u.hostname:
-        sys.exit(f"error: bad Grafana URL {url!r}, expected e.g. https://grafana.example.com")
+        return None
     return f"{u.scheme}://{u.netloc}{u.path.rstrip('/')}"
 
 
-def resolve_grafana_url(cli_value=None):
-    """--grafana-url > LOKI_LOGS_GRAFANA_URL > 配置文件 grafana_url，都没有就报错退出。"""
-    url = cli_value or os.environ.get("LOKI_LOGS_GRAFANA_URL") or load_config().get("grafana_url")
-    if not url:
-        sys.exit("error: Grafana URL is not configured. Set it with one of:\n"
-                 f"  python3 {SCRIPT} config --grafana-url https://grafana.example.com   (writes {CONFIG_FILE})\n"
-                 "  export LOKI_LOGS_GRAFANA_URL=https://grafana.example.com\n"
-                 f"  python3 {SCRIPT} serve --grafana-url https://grafana.example.com")
-    return normalize_grafana_url(url)
+def normalize_grafana_url(url):
+    n = try_normalize_url(url)
+    if not n:
+        sys.exit(f"error: bad Grafana URL {url!r}, expected e.g. https://grafana.example.com")
+    return n
 
 
-def write_config(updates):
-    """只支持顶层的字符串键（目前就 grafana_url），保留文件里其它同类键。"""
-    cfg = {**load_config(), **updates}
+def config_instances(cfg):
+    """配置文件里的实例 {name: url}（老的顶层 grafana_url 视为实例 "default"）。"""
+    inst = {}
+    for name, v in (cfg.get("grafana") or {}).items():
+        url = v.get("url") if isinstance(v, dict) else v
+        if url:
+            inst[name] = normalize_grafana_url(url)
+    if cfg.get("grafana_url") and LEGACY_NAME not in inst:
+        inst[LEGACY_NAME] = normalize_grafana_url(cfg["grafana_url"])
+    return inst
+
+
+def resolve_instances(cli_url=None):
+    """返回 ({name: url}, default_name)。--grafana-url / LOKI_LOGS_GRAFANA_URL 覆盖实例 "default"。都没有就报错退出。"""
+    cfg = load_config()
+    inst = config_instances(cfg)
+    override = cli_url or os.environ.get("LOKI_LOGS_GRAFANA_URL")
+    if override:
+        inst[LEGACY_NAME] = normalize_grafana_url(override)
+    if not inst:
+        sys.exit("error: Grafana URL is not configured. Add one with:\n"
+                 f"  python3 {SCRIPT} config add <name> https://grafana.example.com --default   (writes {CONFIG_FILE})\n"
+                 "  or: export LOKI_LOGS_GRAFANA_URL=https://grafana.example.com")
+    default = cfg.get("default")
+    if default not in inst:
+        default = LEGACY_NAME if LEGACY_NAME in inst else (next(iter(inst)) if len(inst) == 1 else None)
+    return inst, default
+
+
+def cookie_file_for(name):
+    return LEGACY_COOKIE_FILE if name == LEGACY_NAME else os.path.join(COOKIE_DIR, f"{name}.txt")
+
+
+def write_config(cfg):
+    """写回配置：顶层字符串键 + [grafana.<name>] 表。老的顶层 grafana_url 迁移成实例 "default"。"""
+    cfg = dict(cfg)
+    inst = config_instances(cfg)
+    cfg.pop("grafana_url", None)
     os.makedirs(os.path.dirname(CONFIG_FILE), mode=0o700, exist_ok=True)
+    lines = [f"{k} = {json.dumps(str(v))}" for k, v in cfg.items() if k != "grafana" and isinstance(v, str)]
+    for name, url in inst.items():
+        lines += ["", f"[grafana.{json.dumps(name)}]", f"url = {json.dumps(url)}"]
     with open(CONFIG_FILE, "w") as f:
-        for k, v in cfg.items():
-            f.write(f"{k} = {json.dumps(str(v))}\n")
+        f.write("\n".join(lines).lstrip("\n") + "\n")
 
 
 # ---------------------------------------------------------------- time
@@ -358,9 +409,10 @@ class FileCookies:
 # ---------------------------------------------------------------- Grafana / Loki
 
 class Grafana:
-    def __init__(self, url, cookie_src):
+    def __init__(self, name, url, cookie_src):
         import requests
 
+        self.name = name
         self.url = url.rstrip("/")
         self.host = urllib.parse.urlparse(self.url).hostname
         self.src = cookie_src
@@ -377,10 +429,11 @@ class Grafana:
         with self.lock:
             profile, cookies = self.src.load(self.host)
             self.s.cookies.clear()
-            for name, value, domain, path, secure in cookies:
-                self.s.cookies.set(name, value, domain=domain, path=path, secure=secure)
+            https = self.url.startswith("https://")
+            for name, value, domain, path, secure in cookies:  # http 的 Grafana 不能带 secure，否则不会发送
+                self.s.cookies.set(name, value, domain=domain, path=path, secure=secure and https)
             self.profile, self.loaded_at = profile, time.time()
-            log(f"loaded {len(cookies)} cookies for {self.host} from {self.src.browser} {profile!r}: "
+            log(f"[{self.name}] loaded {len(cookies)} cookies for {self.host} from {self.src.browser} {profile!r}: "
                 f"{', '.join(sorted({c[0] for c in cookies}))}")
 
     def _persist(self):
@@ -418,7 +471,7 @@ class Grafana:
         r = self._send(method, path, **kw)
         if self._needs_rotate(r):
             rr = self._send("POST", "/api/user/auth-tokens/rotate")
-            log(f"grafana session token rotated: HTTP {rr.status_code}")
+            log(f"[{self.name}] grafana session token rotated: HTTP {rr.status_code}")
             if rr.status_code < 300:
                 self._persist()
             r = self._send(method, path, **kw)
@@ -429,11 +482,11 @@ class Grafana:
             self.reload_cookies()
         r = self._send_with_rotate(method, path, **kw)
         if self._auth_failed(r):
-            log(f"auth failed (HTTP {r.status_code}), reloading cookies from {self.src.browser}")
+            log(f"[{self.name}] auth failed (HTTP {r.status_code}), reloading cookies from {self.src.browser}")
             self.reload_cookies()
             r = self._send_with_rotate(method, path, **kw)
         if self._auth_failed(r):
-            raise AuthError(f"Grafana login expired (HTTP {r.status_code}). {self.src.hint(self.url)}")
+            raise AuthError(f"Grafana {self.name!r} login expired (HTTP {r.status_code}). {self.src.hint(self.url)}")
         return r
 
     def get_json(self, path, params=None):
@@ -445,28 +498,26 @@ class Grafana:
         except ValueError:
             raise UpstreamError(r.status_code, f"non-JSON response: {r.text[:200]}")
 
-    def datasources(self):
+    def datasources(self, types=("loki",)):
+        """types=None 表示所有类型。"""
         ts, cached = self._ds_cache
-        if cached is not None and time.time() - ts < 300:
-            return cached
-        try:
-            items = self.get_json("/api/datasources")
-        except UpstreamError as e:
-            if e.status != 403:
-                raise
-            items = list(self.get_json("/api/frontend/settings").get("datasources", {}).values())
-        dss = [
-            {"name": d["name"], "uid": d["uid"], "isDefault": bool(d.get("isDefault"))}
-            for d in items if d.get("type") == "loki"
-        ]
-        dss.sort(key=lambda d: d["name"])
-        self._ds_cache = (time.time(), dss)
-        return dss
+        if cached is None or time.time() - ts >= 300:
+            try:
+                items = self.get_json("/api/datasources")
+            except UpstreamError as e:
+                if e.status != 403:
+                    raise
+                items = list(self.get_json("/api/frontend/settings").get("datasources", {}).values())
+            cached = sorted(({"name": d["name"], "uid": d["uid"], "type": d.get("type", ""),
+                              "isDefault": bool(d.get("isDefault"))} for d in items if d.get("uid")),
+                            key=lambda d: d["name"])
+            self._ds_cache = (time.time(), cached)
+        return [d for d in cached if types is None or d["type"] in types]
 
-    def resolve_ds(self, key):
-        dss = self.datasources()
+    def resolve_ds(self, key, types=("loki",), kind="Loki"):
+        dss = self.datasources(types)
         if not dss:
-            raise UpstreamError(404, "no Loki datasource visible in Grafana")
+            raise UpstreamError(404, f"no {kind} datasource visible in Grafana {self.name!r}")
         names = ", ".join(d["name"] for d in dss)
         # 不设默认数据源：查错环境比报错更糟，必须显式指定
         if not key:
@@ -496,6 +547,84 @@ class Grafana:
             raise UpstreamError(502, json.dumps(res)[:1000])
         return res.get("data")
 
+    def ds_query(self, ds, query, start_ns, end_ns):
+        """Grafana 统一查询接口 /api/ds/query（和前端一样，数据源的 custom query parameters 等由 Grafana 处理）。"""
+        body = {"queries": [{"refId": "A", "datasource": {"type": ds["type"], "uid": ds["uid"]}, **query}],
+                "from": str(start_ns // 10**6), "to": str(end_ns // 10**6)}
+        r = self.request("POST", "/api/ds/query", params={"ds_type": ds["type"]}, json=body)
+        try:
+            res = r.json()
+        except ValueError:
+            raise UpstreamError(r.status_code, f"non-JSON response: {r.text[:200]}")
+        a = (res.get("results") or {}).get("A") or {}
+        if a.get("error"):
+            raise UpstreamError(a.get("status") or r.status_code, a["error"][:1000])
+        if r.status_code >= 300:
+            raise UpstreamError(r.status_code, json.dumps(res, ensure_ascii=False)[:1000])
+        return a.get("frames") or []
+
+
+class Hub:
+    """服务端持有的所有 Grafana 实例。"""
+
+    def __init__(self, cli_url=None, chrome=None):
+        self.cli_url, self.chrome = cli_url, chrome
+        self.instances, self.default = {}, None  # {name: Grafana}
+        self.lock = threading.Lock()
+        self.mtime = None
+        self.refresh(force=True)
+
+    def _config_mtime(self):
+        try:
+            return os.stat(CONFIG_FILE).st_mtime_ns
+        except OSError:
+            return 0
+
+    def refresh(self, force=False):
+        """配置文件变了就重新加载实例（地址没变的实例保留登录态），新增实例不用重启服务端。"""
+        m = self._config_mtime()
+        if not force and m == self.mtime:
+            return
+        with self.lock:
+            self.mtime = m
+            try:
+                urls, default = resolve_instances(self.cli_url)
+            except SystemExit as e:
+                if force:
+                    raise
+                log(f"WARNING: config reload failed, keeping old instances: {e}")
+                return
+            old = self.instances
+            self.instances = {
+                n: old[n] if n in old and old[n].url == u
+                else Grafana(n, u, self.chrome or FileCookies(cookie_file_for(n)))
+                for n, u in urls.items()}
+            self.default = default
+            if not force:
+                log(f"config reloaded: {', '.join(f'{n}={g.url}' for n, g in self.instances.items())}, "
+                    f"default={default}")
+
+    def select(self, key=None):
+        """按名字 / URL / host / 名字的唯一前缀选实例；不给就用默认实例。"""
+        names = ", ".join(self.instances)
+        if not key:
+            if self.default:
+                return self.instances[self.default]
+            raise BadRequest(f"several Grafana instances configured and no default; pass --grafana / grafana "
+                             f"(one of: {names})")
+        k = key.strip()
+        if k in self.instances:
+            return self.instances[k]
+        url = try_normalize_url(k)
+        for g in self.instances.values():
+            if url == g.url or k.lower() == g.host:
+                return g
+        hits = [g for n, g in self.instances.items() if n.lower().startswith(k.lower())]
+        if len(hits) == 1:
+            return hits[0]
+        raise BadRequest(f"unknown Grafana instance {key!r}; configured: {names} "
+                         f"(add one with `loki_logs.py config add <name> <url>`)")
+
 
 def normalize_streams(result, direction):
     """合并所有 stream，按时间排序。标签 = stream 标签 + structured metadata；
@@ -518,25 +647,44 @@ def normalize_streams(result, direction):
     return {"common_labels": common, "entries": entries}
 
 
-def api_health(g, p):
+def health_of(g):
     u = g.get_json("/api/user")
-    return {"ok": True, "grafana": g.url, "user": u.get("email") or u.get("login"),
+    return {"ok": True, "name": g.name, "grafana": g.url, "user": u.get("email") or u.get("login"),
             "browser": g.src.browser, "profile": g.profile}
 
 
-def api_datasources(g, p):
-    return {"datasources": g.datasources()}
+def api_health(hub, p):
+    """给了 grafana 就只查这一个（失败直接报错）；否则查所有实例，各自报告。"""
+    if p.get("grafana"):
+        return {"instances": [health_of(hub.select(p["grafana"]))], "default": hub.default}
+    out = []
+    for g in hub.instances.values():
+        try:
+            out.append(health_of(g))
+        except (AuthError, UpstreamError) as e:
+            out.append({"ok": False, "name": g.name, "grafana": g.url, "error": str(e)})
+        except Exception as e:  # 网络错误等
+            out.append({"ok": False, "name": g.name, "grafana": g.url, "error": f"{type(e).__name__}: {e}"})
+    return {"instances": out, "default": hub.default}
 
 
-def api_labels(g, p):
+def api_datasources(hub, p):
+    g = hub.select(p.get("grafana"))
+    t = (p.get("type") or "loki").strip().lower()
+    return {"grafana": g.name, "datasources": g.datasources(None if t == "all" else tuple(t.split(",")))}
+
+
+def api_labels(hub, p):
+    g = hub.select(p.get("grafana"))
     ds = g.resolve_ds(p.get("ds"))
     start, end = resolve_range(p)
     return {"datasource": ds["name"], "labels": g.loki(ds, "labels", {"start": start, "end": end}) or []}
 
 
-def api_label_values(g, p):
+def api_label_values(hub, p):
     if not p.get("name"):
         raise BadRequest("missing 'name'")
+    g = hub.select(p.get("grafana"))
     ds = g.resolve_ds(p.get("ds"))
     start, end = resolve_range(p)
     params = {"start": start, "end": end}
@@ -546,18 +694,20 @@ def api_label_values(g, p):
     return {"datasource": ds["name"], "name": p["name"], "values": g.loki(ds, sub, params) or []}
 
 
-def api_series(g, p):
+def api_series(hub, p):
     if not p.get("match"):
         raise BadRequest("missing 'match'")
+    g = hub.select(p.get("grafana"))
     ds = g.resolve_ds(p.get("ds"))
     start, end = resolve_range(p)
     data = g.loki(ds, "series", [("match[]", p["match"]), ("start", start), ("end", end)])
     return {"datasource": ds["name"], "series": data or []}
 
 
-def api_query(g, p):
+def api_query(hub, p):
     if not p.get("q"):
         raise BadRequest("missing 'q' (LogQL)")
+    g = hub.select(p.get("grafana"))
     ds = g.resolve_ds(p.get("ds"))
     start, end = resolve_range(p)
     try:
@@ -569,7 +719,7 @@ def api_query(g, p):
     if p.get("step"):
         params["step"] = p["step"]
     data = g.loki(ds, "query_range", params, headers={"X-Loki-Response-Encoding-Flags": "categorize-labels"})
-    out = {"datasource": ds["name"], "start": start, "end": end, "limit": limit,
+    out = {"grafana": g.name, "datasource": ds["name"], "start": start, "end": end, "limit": limit,
            "direction": direction, "resultType": data["resultType"]}
     if data["resultType"] == "streams":
         out.update(normalize_streams(data["result"], direction))
@@ -581,19 +731,64 @@ def api_query(g, p):
     return out
 
 
-def api_config(g, p):
-    return {"grafana_url": g.url}
+def prom_frames_to_series(frames):
+    series = []
+    for f in frames:
+        fields = (f.get("schema") or {}).get("fields") or []
+        values = (f.get("data") or {}).get("values") or []
+        ti = next((i for i, fd in enumerate(fields) if fd.get("type") == "time"), None)
+        if ti is None or ti >= len(values):
+            continue
+        for i, fd in enumerate(fields):
+            if i == ti or fd.get("type") != "number" or i >= len(values):
+                continue
+            pts = [[t / 1000, v] for t, v in zip(values[ti], values[i]) if v is not None]
+            series.append({"labels": fd.get("labels") or {}, "values": pts})
+    return series
 
 
-def api_reload(g, p):
-    g.reload_cookies()
-    return api_health(g, p)
+def api_prom(hub, p):
+    if not p.get("q"):
+        raise BadRequest("missing 'q' (PromQL)")
+    g = hub.select(p.get("grafana"))
+    ds = g.resolve_ds(p.get("ds"), PROM_TYPES, "Prometheus")
+    start, end = resolve_range(p)
+    instant = str(p.get("instant") or "").lower() in ("1", "true", "yes")
+    span = (end - start) / 1e9
+    step = parse_duration_ns(p["step"]) / 1e9 if p.get("step") else max(15.0, span / 200)
+    step = max(step, 1.0, span / 11000)  # Prometheus 单次最多 11000 个点
+    query = {"expr": p["q"], "range": not instant, "instant": instant, "format": "time_series",
+             "interval": f"{int(step)}s", "intervalMs": int(step * 1000), "maxDataPoints": int(span / step) + 1}
+    series = prom_frames_to_series(g.ds_query(ds, query, start, end))
+    if instant:
+        for s in series:
+            s["values"] = s["values"][-1:]
+    return {"grafana": g.name, "datasource": ds["name"], "start": start, "end": end,
+            "step": None if instant else int(step), "instant": instant, "series": series}
 
 
-def api_push_cookies(g, p):
+def api_config(hub, p):
+    d = hub.instances.get(hub.default) if hub.default else None
+    return {"grafana_url": d.url if d else next(iter(hub.instances.values())).url,  # 兼容老版本扩展
+            "default": hub.default,
+            "grafanas": [{"name": n, "url": g.url} for n, g in hub.instances.items()]}
+
+
+def api_reload(hub, p):
+    gs = [hub.select(p["grafana"])] if p.get("grafana") else list(hub.instances.values())
+    for g in gs:
+        try:
+            g.reload_cookies()
+        except AuthError as e:
+            log(f"[{g.name}] reload: {e}")
+    return api_health(hub, p)
+
+
+def api_push_cookies(hub, p):
     # 只接受 Chrome 扩展发来的（网页发起的请求 Origin 是 http(s)://...）
     if not p.get("_origin", "").startswith("chrome-extension://"):
         raise BadRequest("cookies can only be pushed by the browser extension")
+    g = hub.select(p.get("grafana"))
     if not hasattr(g.src, "save"):
         raise BadRequest("server is not using a cookie file (started with --source chrome)")
     try:
@@ -604,15 +799,16 @@ def api_push_cookies(g, p):
     if not cookies:
         raise BadRequest("no cookies")
     if not g.accept_pushed(cookies):
-        return {"ok": True, "updated": False}
-    log(f"cookies pushed by extension ({p.get('reason') or '?'})")
+        return {"ok": True, "name": g.name, "updated": False}
+    log(f"[{g.name}] cookies pushed by extension ({p.get('reason') or '?'})")
     try:
-        return {"updated": True, **api_health(g, p)}
-    except AuthError as e:
-        return {"ok": False, "updated": True, "error": str(e)}
+        return {"updated": True, **health_of(g)}
+    except (AuthError, UpstreamError) as e:
+        return {"ok": False, "name": g.name, "updated": True, "error": str(e)}
 
 
 ROUTES = {
+    ("GET", "/prom"): api_prom,
     ("GET", "/health"): api_health,
     ("GET", "/datasources"): api_datasources,
     ("GET", "/labels"): api_labels,
@@ -626,7 +822,7 @@ ROUTES = {
 
 
 class Handler(BaseHTTPRequestHandler):
-    grafana = None
+    hub = None
     allowed_hosts = set()
 
     def _handle(self, method):
@@ -643,7 +839,8 @@ class Handler(BaseHTTPRequestHandler):
         if n:
             p["_body"] = self.rfile.read(min(n, 1 << 20)).decode("utf-8", "replace")
         try:
-            self._reply(200, route(self.grafana, p))
+            self.hub.refresh()
+            self._reply(200, route(self.hub, p))
         except BadRequest as e:
             self._reply(400, {"error": str(e)})
         except AuthError as e:
@@ -673,14 +870,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def run_server(args):
-    src = ChromeCookies(args.browser, args.profile) if args.source == "chrome" else FileCookies(args.cookie_file)
-    g = Grafana(resolve_grafana_url(args.grafana_url), src)
-    try:
-        h = api_health(g, {})
-        log(f"logged in to {g.url} as {h['user']}")
-    except Exception as e:
-        log(f"WARNING: initial login check failed: {e}")
-    Handler.grafana = g
+    hub = Hub(args.grafana_url, ChromeCookies(args.browser, args.profile) if args.source == "chrome" else None)
+    for h in api_health(hub, {})["instances"]:
+        if h["ok"]:
+            log(f"[{h['name']}] logged in to {h['grafana']} as {h['user']}")
+        else:
+            log(f"[{h['name']}] WARNING: initial login check failed: {h['error']}")
+    Handler.hub = hub
     Handler.allowed_hosts = {f"{h}:{args.port}" for h in ("127.0.0.1", "localhost")}
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     log(f"listening on http://127.0.0.1:{args.port}")
@@ -760,9 +956,38 @@ def fmt_labels(d):
     return "{" + ", ".join(f'{k}="{v}"' for k, v in sorted(d.items())) + "}"
 
 
+def render_prom(res):
+    head = f"# grafana={res['grafana']} datasource={res['datasource']} "
+    if res["instant"]:
+        out = [head + f"instant at {fmt_ts(res['end'])}", f"# {len(res['series'])} series"]
+        for s in res["series"]:
+            v = s["values"][-1][1] if s["values"] else None
+            out.append(f"{fmt_labels(s['labels'])}  {v}")
+        return "\n".join(out)
+    out = [head + f"range=[{fmt_ts(res['start'])}, {fmt_ts(res['end'])}] step={res['step']}s",
+           f"# {len(res['series'])} series"]
+    for s in res["series"]:
+        out.append(fmt_labels(s["labels"]))
+        for ts, v in s["values"]:
+            out.append(f"  {fmt_ts(int(ts * 1e9))}  {v}")
+    return "\n".join(out)
+
+
+def render_health(res):
+    out = []
+    for h in res["instances"]:
+        mark = " (default)" if h["name"] == res.get("default") else ""
+        if h["ok"]:
+            out.append(f"ok: [{h['name']}{mark}] {h['grafana']} as {h['user']} "
+                       f"(cookies from {h['browser']}: {h['profile']})")
+        else:
+            out.append(f"FAIL: [{h['name']}{mark}] {h['grafana']}: {h['error']}")
+    return "\n".join(out)
+
+
 def render_query(res, max_line_len=0):
-    out = [f"# datasource={res['datasource']} range=[{fmt_ts(res['start'])}, {fmt_ts(res['end'])}] "
-           f"direction={res['direction']}"]
+    out = [f"# grafana={res['grafana']} datasource={res['datasource']} "
+           f"range=[{fmt_ts(res['start'])}, {fmt_ts(res['end'])}] direction={res['direction']}"]
     if res["resultType"] == "streams":
         n = len(res["entries"])
         note = (f" (hit limit {res['limit']}, there may be more: narrow the time range/filter or raise limit)"
@@ -787,9 +1012,13 @@ def render_query(res, max_line_len=0):
 
 def render(kind, res, max_line_len=0):
     if kind in ("health", "reload"):
-        return f"ok: {res['grafana']} as {res['user']} (cookies from {res['browser']}: {res['profile']})"
+        return render_health(res)
     if kind == "ds":
-        return "\n".join(f"{d['name']}  uid={d['uid']}" for d in res["datasources"])
+        return (f"# grafana={res['grafana']}\n" + "\n".join(
+            f"{d['name']}  type={d['type']}  uid={d['uid']}" for d in res["datasources"])) if res["datasources"] \
+            else f"# grafana={res['grafana']}\n(no datasources of this type; try type=all)"
+    if kind == "prom":
+        return render_prom(res)
     if kind == "labels":
         return "\n".join(res["labels"]) or "(no labels)"
     if kind == "values":
@@ -800,17 +1029,22 @@ def render(kind, res, max_line_len=0):
 
 
 def range_params(a):
-    return {"ds": a.get("ds"), "since": a.get("since"), "start": a.get("start"), "end": a.get("end")}
+    return {"grafana": a.get("grafana"), "ds": a.get("ds"), "since": a.get("since"),
+            "start": a.get("start"), "end": a.get("end")}
 
 
 def client_request(kind, a):
     """kind + 参数 dict → (path, params, method)，CLI 和 MCP 共用。"""
+    g = {"grafana": a.get("grafana")}
     if kind == "health":
-        return "/health", {}, "GET"
+        return "/health", g, "GET"
     if kind == "reload":
-        return "/reload", {}, "POST"
+        return "/reload", g, "POST"
     if kind == "ds":
-        return "/datasources", {}, "GET"
+        return "/datasources", {**g, "type": a.get("type")}, "GET"
+    if kind == "prom":
+        return "/prom", {**range_params(a), "q": a.get("query"), "step": a.get("step"),
+                         "instant": "1" if a.get("instant") else None}, "GET"
     if kind == "labels":
         return "/labels", range_params(a), "GET"
     if kind == "values":
@@ -825,17 +1059,24 @@ def client_request(kind, a):
 
 # ---------------------------------------------------------------- MCP (stdio, JSON-RPC 2.0)
 
+_GRAFANA_PROP = {
+    "grafana": {"type": "string", "description": "Grafana instance name (see loki_health), URL or unique name prefix. "
+                                                 "Optional: defaults to the configured default instance."},
+}
+
 _RANGE_PROPS = {
-    "ds": {"type": "string", "description": "Loki datasource (environment) name, uid or unique prefix, e.g. \"PROD Logs\" / \"test\". "
+    **_GRAFANA_PROP,
+    "ds": {"type": "string", "description": "Datasource (environment) name, uid or unique prefix, e.g. \"PROD Logs\" / \"test\". "
                                             "Required, there is no default: use the environment the user asked for; "
-                                            "if they did not say, ask them (list options with loki_datasources)."},
+                                            "if they did not say, ask them (list options with loki_datasources; type=prometheus for prom_query)."},
     "since": {"type": "string", "description": "Look-back window ending at `end`, e.g. 15m, 1h, 2d. Default 1h. Ignored if `start` is set."},
     "start": {"type": "string", "description": "Range start: relative (2h = now-2h), unix ts, or ISO time like 2026-11-13T22:00:00+08:00 (no tz = server local time)."},
     "end": {"type": "string", "description": "Range end, same formats as start. Default now."},
 }
 
 MCP_INSTRUCTIONS = """\
-Query Loki logs in the team Grafana through a local loki_logs server (auto-started on demand; the Grafana URL is shown by loki_health).
+Query Loki logs (and Prometheus/PromQL metrics via prom_query) in the team Grafana through a local loki_logs server (auto-started on demand).
+Several Grafana instances can be configured; loki_health lists them with their names, URLs and login state. Every tool takes an optional `grafana` (instance name) and uses the default instance otherwise; when the user names a Grafana host/URL, pass the matching instance.
 
 Before querying, make sure you know (ask the user instead of guessing):
 1. Service: usually the `app` label. If the name is vague, list candidates with loki_label_values(name="app", ds=...) and ask. Never query a whole namespace without a service filter.
@@ -851,23 +1092,40 @@ Workflow:
 - Follow a trace / request id with `{app="<app>"} |= "<id>"` over a wider range.
 - Summarize key lines (timestamp + key fields) and counts; do not dump raw logs.
 
-If the server fails to start because the Grafana URL is not configured, show the user the command from the error (`loki_logs.py config --grafana-url ...`) and ask for their Grafana URL.
-If a tool says the Grafana login expired or there are no cookies yet: stop and ask the user to open the Grafana URL from the error message in Chrome and log in (the loki_logs cookie-sync extension pushes cookies to the server automatically). Never ask the user to paste cookies into the chat.
+If the server fails to start because the Grafana URL is not configured, or the user wants a Grafana that is not configured yet, show the user the command (`loki_logs.py config add <name> <url>`) and ask for their Grafana URL; the server picks up config changes without a restart.
+If a tool says the Grafana login expired or there are no cookies yet: stop and ask the user to open the Grafana URL from the error message in Chrome and log in (the loki_logs cookie-sync extension pushes cookies to the server automatically; for a newly added instance the user first clicks the extension icon and grants access). Never ask the user to paste cookies into the chat.
 """
 
 MCP_TOOLS = [
     {
         "name": "loki_health",
-        "description": "Check that the local loki_logs server is running and logged in to Grafana (starts it if needed). "
-                       "On a login error, ask the user to log in to Grafana in Chrome.",
-        "inputSchema": {"type": "object", "properties": {}},
+        "description": "List the configured Grafana instances and check that the local loki_logs server is running and "
+                       "logged in to each (starts it if needed). On a login error, ask the user to log in to that Grafana in Chrome.",
+        "inputSchema": {"type": "object", "properties": {**_GRAFANA_PROP}},
         "kind": "health",
     },
     {
         "name": "loki_datasources",
-        "description": "List the Loki datasources (environments) available in Grafana.",
-        "inputSchema": {"type": "object", "properties": {}},
+        "description": "List datasources in a Grafana instance: Loki ones (environments) by default, "
+                       "type=\"prometheus\" for PromQL ones, type=\"all\" for every type.",
+        "inputSchema": {"type": "object", "properties": {
+            **_GRAFANA_PROP,
+            "type": {"type": "string", "description": "loki (default), prometheus, all, or comma-separated Grafana plugin types"}}},
         "kind": "ds",
+    },
+    {
+        "name": "prom_query",
+        "description": (
+            "Run a PromQL query against a Prometheus-type datasource (Prometheus, GreptimeDB/VictoriaMetrics PromQL, ...) "
+            "via Grafana's /api/ds/query, the same path dashboards use. Use instant=true for the current value; "
+            "for range queries pick a step so that the number of points stays small (range/step), e.g. 6h with step 10m."
+        ),
+        "inputSchema": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "PromQL expression"},
+            "instant": {"type": "boolean", "description": "Instant query at `end` (default false = range query)"},
+            "step": {"type": "string", "description": "Range query step, e.g. 1m (default: range/200, at least 15s)"},
+            **_RANGE_PROPS}, "required": ["query", "ds"]},
+        "kind": "prom",
     },
     {
         "name": "loki_labels",
@@ -953,7 +1211,7 @@ def run_mcp():
                 result = {
                     "protocolVersion": params.get("protocolVersion", "2025-06-18"),
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "loki-logs", "version": "1.1.0"},
+                    "serverInfo": {"name": "loki-logs", "version": "1.2.0"},
                     "instructions": MCP_INSTRUCTIONS,
                 }
             elif method == "ping":
@@ -972,30 +1230,91 @@ def run_mcp():
 
 # ---------------------------------------------------------------- CLI
 
+def cmd_config(args):
+    cfg = load_config()
+    changed = None
+    if args.grafana_url:  # 老用法：等价于 config add default <url>
+        args.action, args.name, args.url = "add", LEGACY_NAME, args.grafana_url
+    if args.action == "add":
+        if not args.name or not args.url:
+            sys.exit("usage: config add <name> <url> [--default]")
+        if not _NAME.match(args.name):
+            sys.exit(f"error: bad instance name {args.name!r} (letters, digits, _ . -)")
+        url = normalize_grafana_url(args.url)
+        inst = config_instances(cfg)  # 先把老的 grafana_url 迁移进来
+        inst[args.name] = url
+        cfg["grafana"] = {n: {"url": u} for n, u in inst.items()}
+        cfg.pop("grafana_url", None)
+        if args.default or len(inst) == 1:
+            cfg["default"] = args.name
+        changed = f"added {args.name} = {url}"
+    elif args.action == "remove":
+        inst = config_instances(cfg)
+        if args.name not in inst:
+            sys.exit(f"error: no instance {args.name!r}; configured: {', '.join(inst) or '(none)'}")
+        del inst[args.name]
+        cfg["grafana"] = {n: {"url": u} for n, u in inst.items()}
+        cfg.pop("grafana_url", None)
+        if cfg.get("default") == args.name:
+            cfg.pop("default")
+        changed = f"removed {args.name}"
+    elif args.action == "default":
+        inst = config_instances(cfg)
+        if args.name not in inst:
+            sys.exit(f"error: no instance {args.name!r}; configured: {', '.join(inst) or '(none)'}")
+        cfg["default"] = args.name
+        changed = f"default = {args.name}"
+    if changed:
+        write_config(cfg)
+        print(f"{changed} (wrote {CONFIG_FILE}; the running server picks it up automatically)")
+        cfg = load_config()
+    inst = config_instances(cfg)
+    default = cfg.get("default") if cfg.get("default") in inst else None
+    print(f"config file: {CONFIG_FILE}")
+    if not inst:
+        print("no Grafana instance configured; add one with: config add <name> <url> --default")
+    for n, u in inst.items():
+        mark = " (default)" if n == default else ""
+        has = "yes" if os.path.exists(cookie_file_for(n)) else "no"
+        print(f"  {n}{mark}: {u}  cookies={cookie_file_for(n)} (exists: {has})")
+    env = os.environ.get("LOKI_LOGS_GRAFANA_URL")
+    if env:
+        print(f"LOKI_LOGS_GRAFANA_URL (overrides instance {LEGACY_NAME!r}): {env}")
+
+
 def main():
     global DEFAULT_SERVER
-    ap = argparse.ArgumentParser(description="Query Loki logs through Grafana (client/server).",
+    ap = argparse.ArgumentParser(description="Query Loki logs / PromQL metrics through Grafana (client/server).",
                                  formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     ap.add_argument("--server", default=DEFAULT_SERVER, help=f"server address (default {DEFAULT_SERVER})")
+    ap.add_argument("--grafana", help="Grafana instance name / URL (default: the configured default)")
     sub = ap.add_subparsers(dest="cmd", required=True)
+
+    def sp_(name, **kw):  # 子命令里也可以写 --grafana
+        p = sub.add_parser(name, **kw)
+        p.add_argument("--grafana", default=argparse.SUPPRESS, help="Grafana instance name / URL")
+        return p
 
     sp = sub.add_parser("serve", help="run the local server")
     sp.add_argument("--port", type=int, default=urllib.parse.urlparse(DEFAULT_SERVER).port or 7788)
-    sp.add_argument("--grafana-url", help="override LOKI_LOGS_GRAFANA_URL / config file")
+    sp.add_argument("--grafana-url", help=f"override the URL of instance {LEGACY_NAME!r} (and LOKI_LOGS_GRAFANA_URL)")
     sp.add_argument("--source", choices=["file", "chrome"], default="file",
-                    help="file: cookie file fed by the extension / set-cookie (default); chrome: read Chrome's cookie DB")
-    sp.add_argument("--cookie-file", default=DEFAULT_COOKIE_FILE)
+                    help="file: cookie files fed by the extension / set-cookie (default); chrome: read Chrome's cookie DB")
     sp.add_argument("--browser", choices=sorted(BROWSERS), default="chrome", help="for --source chrome")
     sp.add_argument("--profile", help='for --source chrome: profile dir, e.g. "Default" / "Profile 1" (default: auto)')
 
     sub.add_parser("mcp", help="run as a stdio MCP server")
-    sub.add_parser("health", help="check login status")
-    sub.add_parser("reload", help="force the server to re-read cookies")
-    p = sub.add_parser("config", help=f"show or set config ({CONFIG_FILE})")
-    p.add_argument("--grafana-url", help="Grafana base URL, e.g. https://grafana.example.com")
-    p = sub.add_parser("set-cookie", help="read a Cookie header value from stdin into the cookie file")
-    p.add_argument("--cookie-file", default=DEFAULT_COOKIE_FILE)
-    sub.add_parser("ds", help="list Loki datasources")
+    sp_("health", help="check login status of all (or one) Grafana instances")
+    sp_("reload", help="force the server to re-read cookies")
+    p = sub.add_parser("config", help=f"show or edit Grafana instances ({CONFIG_FILE})")
+    p.add_argument("action", nargs="?", choices=["show", "add", "remove", "default"], default="show")
+    p.add_argument("name", nargs="?")
+    p.add_argument("url", nargs="?")
+    p.add_argument("--default", action="store_true", help="with add: make it the default instance")
+    p.add_argument("--grafana-url", help=argparse.SUPPRESS)  # 老用法
+    p = sp_("set-cookie", help="read a Cookie header value from stdin into an instance's cookie file")
+    p = sp_("ds", help="list datasources (Loki by default)")
+    p.add_argument("--type", help="loki (default), prometheus, all, or comma-separated plugin types")
 
     def add_range(p):
         p.add_argument("--ds", help="datasource name, uid or unique prefix, e.g. prod / test (required)")
@@ -1004,20 +1323,25 @@ def main():
         p.add_argument("--end")
         p.add_argument("--json", action="store_true", help="print raw JSON")
 
-    add_range(sub.add_parser("labels", help="list label names"))
-    p = sub.add_parser("values", help="list values of a label")
+    add_range(sp_("labels", help="list label names"))
+    p = sp_("values", help="list values of a label")
     p.add_argument("name")
     p.add_argument("--query", help="stream selector to restrict values")
     add_range(p)
-    p = sub.add_parser("series", help="list streams matching a selector")
+    p = sp_("series", help="list streams matching a selector")
     p.add_argument("match")
     add_range(p)
-    p = sub.add_parser("query", help="run a LogQL query")
+    p = sp_("query", help="run a LogQL query")
     p.add_argument("query")
     p.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
     p.add_argument("--asc", action="store_true", help="oldest first (direction=forward)")
     p.add_argument("--step", help="step for metric queries, e.g. 1m")
     p.add_argument("--max-line-len", type=int, default=0, help="truncate long lines (0 = no limit)")
+    add_range(p)
+    p = sp_("prom", help="run a PromQL query on a Prometheus-type datasource")
+    p.add_argument("query")
+    p.add_argument("--instant", action="store_true", help="instant query at --end (default: range query)")
+    p.add_argument("--step", help="range query step, e.g. 1m (default: range/200, at least 15s)")
     add_range(p)
 
     args = ap.parse_args()
@@ -1026,27 +1350,22 @@ def main():
     if args.cmd == "mcp":
         DEFAULT_SERVER = args.server
         return run_mcp()
-
     if args.cmd == "config":
-        if args.grafana_url:
-            write_config({"grafana_url": normalize_grafana_url(args.grafana_url)})
-            print(f"wrote {CONFIG_FILE}")
-            print("restart the server to apply: pkill -f 'loki_logs.py serve' (it is auto-started on next use)")
-        env = os.environ.get("LOKI_LOGS_GRAFANA_URL")
-        print(f"config file: {CONFIG_FILE}")
-        print(f"grafana_url: {load_config().get('grafana_url') or '(not set)'}")
-        if env:
-            print(f"LOKI_LOGS_GRAFANA_URL (overrides config file): {env}")
-        return
+        return cmd_config(args)
 
     if args.cmd == "set-cookie":
         cookies = parse_cookie_header(sys.stdin.read())
         if not cookies:
             sys.exit("error: no cookies on stdin (expected the Cookie header value, e.g. `pbpaste | ... set-cookie`)")
-        write_cookie_file(args.cookie_file, cookies)
-        print(f"wrote {len(cookies)} cookies ({', '.join(sorted(cookies))}) to {args.cookie_file}")
+        urls, default = resolve_instances()
+        name = args.grafana or default
+        if name not in urls:
+            sys.exit(f"error: pass --grafana <name>, one of: {', '.join(urls)}")
+        path = cookie_file_for(name)
+        write_cookie_file(path, cookies)
+        print(f"wrote {len(cookies)} cookies ({', '.join(sorted(cookies))}) to {path}")
         try:
-            print(render("health", call("/reload", method="POST", server=args.server)))
+            print(render("health", call("/reload", {"grafana": name}, method="POST", server=args.server)))
         except ClientError as e:
             print(f"server reload: {e}")
         return

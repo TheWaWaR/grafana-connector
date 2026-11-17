@@ -1,15 +1,17 @@
 ---
 name: loki-logs
-description: Query and troubleshoot service logs in Loki through the team Grafana (datasources such as TEST Logs / PROD Logs) via a local loki_logs server, using LogQL through the loki MCP tools or a bundled CLI. Use when the user asks to check, search, or investigate a service's logs, errors, trace_ids, or behavior in the test/stage/prod environment, or mentions Loki, Grafana logs, or LogQL.
+description: Query and troubleshoot service logs in Loki (LogQL) and Prometheus-type metrics (PromQL) through one or more team Grafana instances via a local loki_logs server, using the loki MCP tools or a bundled CLI. Use when the user asks to check, search, or investigate a service's logs, errors, trace_ids, or behavior in the test/stage/prod environment, wants to run or debug a PromQL / Grafana dashboard query, or mentions Loki, Grafana logs, LogQL or PromQL.
 ---
 
 # Loki 日志排查
 
 所有查询都通过本机的 loki_logs 服务端（127.0.0.1:7788）走 Grafana，登录态由服务端持有，你不需要也不应该自己登录 Grafana。服务端没开时，CLI / MCP 会自动在后台拉起它。
 
+可以配置多个 Grafana 实例（`health` 会列出每个实例的名字、地址和登录状态）。所有命令都可以用 `--grafana <name>`（MCP 参数 `grafana`）选实例，不写就用默认实例；名字、完整 URL 或名字的唯一前缀都行。用户给的 Grafana 地址还没配置时，执行 `<skill-dir>/scripts/loki_logs.py config add <name> <url>`（服务端自动加载，不用重启），再让用户在 Chrome 里点扩展图标授权并登录该 Grafana。
+
 两种调用方式，能力完全一样：
 
-- **MCP 工具**（优先）：如果当前环境里有 `loki` MCP 工具（`loki_health`、`loki_datasources`、`loki_labels`、`loki_label_values`、`loki_series`、`loki_query`），直接用它们，参数和下面的 CLI 一一对应（`--ds` → `ds`，`--max-line-len` → `max_line_len`，`--asc` → `direction="forward"`）。在 Codex 这类 shell 默认处于无网络沙箱的环境里，只能用 MCP。
+- **MCP 工具**（优先）：如果当前环境里有 `loki` MCP 工具（`loki_health`、`loki_datasources`、`loki_labels`、`loki_label_values`、`loki_series`、`loki_query`、`prom_query`），直接用它们，参数和下面的 CLI 一一对应（`--grafana` → `grafana`，`--ds` → `ds`，`--max-line-len` → `max_line_len`，`--asc` → `direction="forward"`，`--instant` → `instant=true`）。在 Codex 这类 shell 默认处于无网络沙箱的环境里，只能用 MCP。
 - **CLI**：`<skill-dir>/scripts/loki_logs.py`，`<skill-dir>` 是本 SKILL.md 所在的目录。调用时写完整的绝对路径；不要用 shell 变量包装命令（zsh 不会对 `$VAR` 分词）。
 
 ```bash
@@ -18,22 +20,22 @@ description: Query and troubleshoot service logs in Loki through the team Grafan
 
 ## 先处理 health 的结果
 
-- `ok: ... as <email>`：可以查了。
+- `ok: [<name>] ... as <email>`：这个实例可以查了（每个实例一行，`FAIL:` 的实例按下面的错误处理）。
 - `failed to start loki_logs server`：自动启动失败，错误里带了日志尾部。常见原因是缺 `requests`，让用户按提示执行 `python3 -m pip install requests`。
 - `cannot reach loki_logs server ... sandbox`：当前 shell 没有网络权限，改用 MCP 工具；没有 MCP 工具就告诉用户需要注册 MCP（见仓库 README）。
-- `Grafana URL is not configured`：还没配置 Grafana 地址，问用户要地址，然后执行 `<skill-dir>/scripts/loki_logs.py config --grafana-url <url>`（写入 `~/.config/loki_logs/config.toml`），再重新 health。
+- `Grafana URL is not configured`：还没配置 Grafana，问用户要地址，然后执行 `<skill-dir>/scripts/loki_logs.py config add <name> <url> --default`（写入 `~/.config/loki_logs/config.toml`），再重新 health。
 - `HTTP 401` / `login expired`：登录态失效，**停下来让用户在 Chrome 里打开错误信息里给出的 Grafana 地址重新登录**（cookie 同步扩展会自动推送给服务端），用户确认后再 health。不要尝试其它登录方式，也不要让用户把 cookie 贴到聊天里。
 - `no cookies yet`：服务端从没收到过 cookie，多半是扩展还没装，按下面的步骤引导用户。
 
 ### 首次设置 / cookie 同步排障（需要用户在 Chrome 里操作，你做不了）
 
-0. 配置 Grafana 地址（只需一次）：`<skill-dir>/scripts/loki_logs.py config --grafana-url <url>`，也可以用环境变量 `LOKI_LOGS_GRAFANA_URL`。
+0. 配置 Grafana 实例：`<skill-dir>/scripts/loki_logs.py config add <name> <url> [--default]`。
 1. 安装扩展：`chrome://extensions` → 打开右上角"开发者模式" → "加载已解压的扩展程序" → 选 `<skill-dir>/chrome_ext/loki_logs_cookie_sync`（告诉用户展开后的绝对路径）。
-2. 点工具栏上的扩展图标，在弹出的小窗里点「授权并推送 cookie」，授权扩展读取该 Grafana 域名的 cookie（只需一次）。
+2. 点工具栏上的扩展图标，在弹出的小窗里点「授权并推送所有 Grafana 的 cookie」，授权扩展读取这些 Grafana 域名的 cookie（新加实例后要再点一次）。
 3. 在 Chrome 里打开 Grafana 并登录，扩展会自动推送；之后想手动推一次也是点扩展图标里的按钮。
 4. 扩展图标角标含义（点开小窗可看详细信息）：无角标 = 推送成功；`auth` = 还没授权读取 Grafana 域名的 cookie；`off` = 连不上服务端（先确认服务端在跑）；`?` = Chrome 里没有 grafana 的 cookie（还没登录）；`!` / `err` = 服务端拒绝或出错。
 5. 刚装上或改过扩展后推送没反应时，在 `chrome://extensions` 里点扩展卡片上的刷新按钮重新加载。
-6. 兜底：用户在 DevTools → Network → 任一 grafana 请求 → Request Headers 里复制 `Cookie` 的值，自己在终端执行 `pbpaste | <skill-dir>/scripts/loki_logs.py set-cookie`。
+6. 兜底：用户在 DevTools → Network → 任一 grafana 请求 → Request Headers 里复制 `Cookie` 的值，自己在终端执行 `pbpaste | <skill-dir>/scripts/loki_logs.py set-cookie --grafana <name>`。
 
 ## 先确认要查什么
 
@@ -48,13 +50,14 @@ description: Query and troubleshoot service logs in Loki through the team Grafan
 
 | 命令 | 作用 |
 |---|---|
-| `loki_logs.py ds` | 列出 Loki 数据源 |
+| `loki_logs.py ds [--type prometheus\|all]` | 列出数据源（默认只列 Loki） |
 | `loki_logs.py labels --ds <ds> --since 1h` | 有数据的 label 名（只有这些能写在 `{}` 里） |
 | `loki_logs.py values app --ds <ds> --since 1h` | label 取值；`--query '{namespace="<ns>"}'` 限定范围 |
 | `loki_logs.py series '{app="<app>"}' --ds <ds>` | 匹配的 stream（看有哪些 pod / region 等） |
 | `loki_logs.py query '<LogQL>' --ds <ds> [opts]` | 查日志或指标 |
+| `loki_logs.py prom '<PromQL>' --ds <ds> [--instant] [--step 5m]` | Prometheus 类数据源的 PromQL（走 Grafana `/api/ds/query`，和 dashboard 一样） |
 
-通用参数：`--ds`（必填；完整名字、uid 或唯一前缀都行，如 `--ds prod`、`--ds test`）、`--since 30m`（默认 1h）、`--start` / `--end`（`2h` = now-2h、ISO 时间如 `2026-01-02T15:00`（本地时区）或带 `+08:00`/`Z`、Unix 时间戳）、`--json`。
+通用参数：`--grafana`（选 Grafana 实例，默认实例可省略）、`--ds`（必填；完整名字、uid 或唯一前缀都行，如 `--ds prod`、`--ds test`）、`--since 30m`（默认 1h）、`--start` / `--end`（`2h` = now-2h、ISO 时间如 `2026-01-02T15:00`（本地时区）或带 `+08:00`/`Z`、Unix 时间戳）、`--json`。
 `query` 额外参数：`--limit N`（默认 100，最大 5000）、`--asc`（从旧到新，默认最新在前）、`--step 5m`（指标查询）、`--max-line-len 300`（截断长行，省 token）。
 
 输出格式：首行是数据源和时间范围；`# N lines (hit limit ...)` 表示被 limit 截断了；`# common labels` 是所有行共有的标签，每行只额外显示有差异的标签（如 pod）。
@@ -96,3 +99,9 @@ description: Query and troubleshoot service logs in Loki through the team Grafan
 
 - 时间范围从小开始（15m–1h），确有需要再放大；大范围先用指标查询。
 - 不要把大段原始日志原样贴给用户，提炼关键行和统计结果。
+
+## PromQL
+
+- 先用 `ds --type prometheus` 找数据源；排查 dashboard 时用 dashboard 里同一个数据源。
+- 看当前值用 `--instant`；看趋势时控制点数（时间范围 / step），例如 6h 配 `--step 10m`。
+- 把复杂表达式拆开逐段查（各个子表达式、`or` / `on() group_left` 两侧），定位是哪一步结果不对。

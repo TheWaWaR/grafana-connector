@@ -1,6 +1,6 @@
 # grafana-loki-logs
 
-让 Claude Code、Codex、omp（oh-my-pi）能直接查团队 Grafana 上的 Loki 日志（例如 TEST Logs / PROD Logs 数据源）。仓库本身就是一个 [Agent Skill](https://agentskills.io)（`loki-logs`），同时自带一个 MCP server。
+让 Claude Code、Codex、omp（oh-my-pi）能直接查团队 Grafana 上的 Loki 日志（例如 TEST Logs / PROD Logs 数据源），以及 Prometheus 类数据源的 PromQL 指标。支持同时配置多个 Grafana（每个实例单独登录）。仓库本身就是一个 [Agent Skill](https://agentskills.io)（`loki-logs`），同时自带一个 MCP server。
 
 Grafana 前面通常有 SSO（比如 AWS Verified Access + Google 登录），脚本自己没法登录，所以复用你 Chrome 里的登录态：
 
@@ -11,7 +11,7 @@ Chrome（已登录 Grafana）
                    MCP / CLI（Claude Code、Codex、omp 的各个 session 共用）
 ```
 
-- 登录态只放在本机服务端（`~/.config/loki_logs/cookie.txt`，权限 600），所有 AI session 共用，不用各自登录。
+- 登录态只放在本机服务端（每个 Grafana 实例一个文件 `~/.config/loki_logs/cookies/<name>.txt`，老的单实例配置仍用 `cookie.txt`，权限 600），所有 AI session 共用，不用各自登录。
 - 服务端不用手动启动：MCP / CLI 第一次调用时发现它没开，会自动在后台拉起（日志在 `~/.config/loki_logs/server.log`）。
 - Chrome 里重新登录或 cookie 刷新时，扩展会自动推送最新 cookie，服务端不用重启。
 
@@ -30,11 +30,15 @@ Chrome（已登录 Grafana）
    ```bash
    ln -s ~/.agents/skills/loki-logs ~/.claude/skills/loki-logs
    ```
-2. 配置 Grafana 地址（只需一次，写入 `~/.config/loki_logs/config.toml`）：
+2. 配置 Grafana 实例（写入 `~/.config/loki_logs/config.toml`，路径可用 `LOKI_LOGS_CONFIG` 改）。每个 Grafana 起一个名字，支持带子路径的地址：
    ```bash
-   ~/.agents/skills/loki-logs/scripts/loki_logs.py config --grafana-url https://grafana.example.com
+   ~/.agents/skills/loki-logs/scripts/loki_logs.py config add main https://grafana.example.com --default
    ```
-   也可以用环境变量 `LOKI_LOGS_GRAFANA_URL` 覆盖，优先级：`serve --grafana-url` > `LOKI_LOGS_GRAFANA_URL` > 配置文件（路径可用 `LOKI_LOGS_CONFIG` 改）。
+   ```bash
+   ~/.agents/skills/loki-logs/scripts/loki_logs.py config add arb https://admin.example.com/arb-grafana
+   ```
+   `config` 查看所有实例，`config default <name>` 改默认实例，`config remove <name>` 删除。服务端会自动加载配置变化，不用重启。
+   老配置（顶层 `grafana_url`）继续可用，视为名为 `default` 的实例；环境变量 `LOKI_LOGS_GRAFANA_URL` / `serve --grafana-url` 会覆盖这个实例的地址。
 3. 注册 MCP server：
    - **Codex（必须）**：Codex 的 shell 默认在无网络沙箱里，CLI 连不上本地服务端，只能走 MCP。
      ```bash
@@ -54,14 +58,14 @@ Chrome（已登录 Grafana）
    ```bash
    ~/.agents/skills/loki-logs/scripts/loki_logs.py health
    ```
-6. 点工具栏上的扩展图标，在弹出的小窗里点「授权并推送 cookie」，允许扩展读取你的 Grafana 域名的 cookie（扩展从本地服务端读取 Grafana 地址，只申请这一个域名的权限）。
+6. 点工具栏上的扩展图标，在弹出的小窗里点「授权并推送所有 Grafana 的 cookie」，允许扩展读取这些 Grafana 域名的 cookie（扩展从本地服务端读取实例列表，只申请这些域名的权限）。以后新加实例，再点一次这个按钮授权即可。
 7. 在 Chrome 里打开 Grafana 并登录，扩展会自动推送 cookie。再验证：
    ```bash
    ~/.agents/skills/loki-logs/scripts/loki_logs.py health
    ```
-   输出 `ok: <你的 Grafana 地址> as <你的邮箱>` 就装好了。
+   每个实例输出一行 `ok: [<name>] <Grafana 地址> as <你的邮箱>` 就装好了。
 
-扩展图标角标：无角标 = 同步正常；`auth` = 还没授权读取 Grafana 域名的 cookie（点图标里的按钮）；`off` = 连不上服务端；`?` = Chrome 里还没登录 Grafana；`!` / `err` = 服务端拒绝或出错（点开图标看详情）。刚装上推送没反应时，在 `chrome://extensions` 里点扩展卡片上的刷新按钮。
+扩展图标角标（多个实例时显示最差的那个，点开小窗看每个实例的状态）：无角标 = 同步正常；`auth` = 还没授权读取 Grafana 域名的 cookie（点图标里的按钮）；`off` = 连不上服务端；`?` = Chrome 里还没登录 Grafana；`!` / `err` = 服务端拒绝或出错（点开图标看详情）。刚装上推送没反应时，在 `chrome://extensions` 里点扩展卡片上的刷新按钮。
 
 ## 使用
 
@@ -79,7 +83,13 @@ loki query '{app="<app>"} |= "<keyword>"' --ds test --since 30m --limit 50
 loki query '{app="<app>"} | logfmt | <field>="<value>"' --ds test --since 3h
 loki query 'sum by (<field>) (count_over_time({app="<app>"} | logfmt [5m]))' --ds test --since 2h --step 5m
 loki query '{app="<app>"}' --ds prod --since 15m
+loki health                                              # 所有 Grafana 实例的登录状态
+loki --grafana arb ds --type prometheus                  # --grafana 选实例（名字、URL 或名字前缀），不写用默认实例
+loki --grafana arb prom 'sum by(job)(up)' --ds greptimedb --instant
+loki --grafana arb prom 'rate(x_total[5m])' --ds greptimedb --since 6h --step 10m
 ```
+
+PromQL 查询走 Grafana 的 `/api/ds/query`（和 dashboard 一样），数据源上配置的 custom query parameters（比如 GreptimeDB 的 `db=...`）由 Grafana 自动带上。
 
 环境：`--ds` 必填，写完整名字（`"PROD Logs"`）、uid 或唯一前缀（`prod` / `test`）都行；故意不设默认值，免得查错环境。
 
@@ -88,14 +98,14 @@ loki query '{app="<app>"}' --ds prod --since 15m
 没装扩展时的兜底：在 DevTools → Network → 任一 grafana 请求 → Request Headers 里复制 `Cookie` 的值，然后：
 
 ```bash
-pbpaste | ~/.agents/skills/loki-logs/scripts/loki_logs.py set-cookie
+pbpaste | ~/.agents/skills/loki-logs/scripts/loki_logs.py set-cookie --grafana <name>
 ```
 
 ## 安全
 
 - 服务端只监听 `127.0.0.1`，并校验 `Host` 头（防 DNS rebinding）。
 - `POST /cookies` 只接受来自 Chrome 扩展的请求（`Origin: chrome-extension://…`），网页无法往服务端塞 cookie。
-- 扩展默认只有访问 `127.0.0.1:7788` 的权限；读取 Grafana 域名 cookie 的权限要你在小窗里点按钮授予，而且只授予配置的那一个域名。cookie 只会发给 `127.0.0.1:7788`。
+- 扩展默认只有访问 `127.0.0.1:7788` 的权限；读取 Grafana 域名 cookie 的权限要你在小窗里点按钮授予，而且只授予已配置实例的域名。cookie 只会发给 `127.0.0.1:7788`。
 - cookie 等同于你的 Grafana 登录凭证，不要贴到聊天、issue 或日志里。
 
 ## 更新
@@ -104,4 +114,4 @@ pbpaste | ~/.agents/skills/loki-logs/scripts/loki_logs.py set-cookie
 git -C ~/.agents/skills/loki-logs pull
 ```
 
-更新后如果扩展有改动，在 `chrome://extensions` 里点刷新；改了 Grafana 地址或服务端代码时，执行 `pkill -f "loki_logs.py serve"` 停掉即可，下次调用会自动用新代码拉起。
+更新后如果扩展有改动，在 `chrome://extensions` 里点刷新；改了服务端代码时，执行 `pkill -f "loki_logs.py serve"` 停掉即可，下次调用会自动用新代码拉起（只改配置不用重启）。

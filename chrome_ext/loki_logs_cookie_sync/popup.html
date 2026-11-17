@@ -5,19 +5,19 @@
   <style>
     body { font: 13px -apple-system, BlinkMacSystemFont, sans-serif; width: 300px; margin: 12px; }
     h1 { font-size: 14px; margin: 0 0 8px; }
-    .row { margin: 6px 0; word-break: break-all; }
+    .row { margin: 8px 0; word-break: break-all; white-space: pre-line; }
+    .ok { color: #1a7f37; }
+    .warn { color: #9a6700; }
+    .err { color: #cf222e; }
     .muted { color: #666; }
-    #status.ok { color: #1a7f37; }
-    #status.warn { color: #9a6700; }
-    #status.err { color: #cf222e; }
     button { margin-top: 8px; width: 100%; padding: 6px; font: inherit; cursor: pointer; }
   </style>
 </head>
 <body>
   <h1>loki_logs cookie sync</h1>
-  <div class="row"><span class="muted">Grafana：</span><span id="grafana">读取中…</span></div>
+  <div id="list"><div class="row muted">读取中…</div></div>
   <div class="row" id="status"></div>
-  <button id="push" disabled>授权并推送 cookie</button>
+  <button id="push" disabled>授权并推送所有 Grafana 的 cookie</button>
   <script src="popup.js"></script>
 </body>
 </html>
